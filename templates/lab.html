@@ -1,0 +1,124 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Windows Event Investigation | BLITZ SOC Labs</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="lab-body">
+<header class="topbar">
+  <div class="brand small">BLITZ <span>SOC LABS</span></div>
+  <div class="lab-title">LAB 01 / WINDOWS EVENT LOG INVESTIGATION</div>
+  <div class="live"><i></i> LIVE DATASET</div>
+</header>
+
+<main class="dashboard">
+  <section class="stats" id="stats"></section>
+
+  <section class="toolbar">
+    <div class="search-wrap"><span>⌕</span><input id="q" placeholder="Search events, messages, users, IPs..."></div>
+    <input id="event_id" placeholder="Event ID">
+    <input id="source_ip" placeholder="Source IP">
+    <input id="account" placeholder="Account">
+    <select id="level"><option value="">All severity</option><option>Information</option><option>Warning</option><option>Failure Audit</option></select>
+    <button onclick="loadEvents(1)">SEARCH</button>
+    <button class="ghost" onclick="clearFilters()">CLEAR</button>
+  </section>
+
+  <section class="workspace">
+    <div class="panel event-panel">
+      <div class="panel-head">
+        <div><h2>Windows Security Events</h2><p id="resultCount">Loading...</p></div>
+        <div class="legend"><span class="dot red"></span>Failure <span class="dot amber"></span>Warning <span class="dot green"></span>Info</div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>TIME</th><th>EVENT ID</th><th>LEVEL</th><th>ACCOUNT</th><th>SOURCE IP</th><th>HOSTNAME</th><th>MESSAGE</th></tr></thead>
+          <tbody id="eventRows"></tbody>
+        </table>
+      </div>
+      <div class="pagination"><button id="prev" onclick="changePage(-1)">← PREVIOUS</button><span id="pageInfo"></span><button id="next" onclick="changePage(1)">NEXT →</button></div>
+    </div>
+
+    <aside class="side">
+      <div class="panel detail-panel">
+        <div class="panel-head"><div><h2>Event Details</h2><p>Select an event to inspect it</p></div></div>
+        <div id="details" class="empty">Select a row from the event table.</div>
+      </div>
+      <div class="panel action-panel">
+        <h2>Investigation Action</h2>
+        <p>When your investigation identifies the malicious source IP, confirm it below.</p>
+        <label>CONFIRMED SOURCE IP</label>
+        <input id="iocInput" placeholder="e.g. 203.0.113.10">
+        <button class="confirm" onclick="confirmIOC()">CONFIRM IOC</button>
+        <div id="actionMsg"></div>
+      </div>
+    </aside>
+  </section>
+</main>
+
+<div id="flagModal" class="modal hidden">
+ <div class="modal-card">
+   <div class="success-icon">✓</div>
+   <div class="lab-tag">INVESTIGATION COMPLETE</div>
+   <h2>IOC Confirmed</h2>
+   <p>You correctly identified the malicious source. Submit the following flag to the academy platform.</p>
+   <div class="flag" id="flagText"></div>
+   <button onclick="document.getElementById('flagModal').classList.add('hidden')">CLOSE</button>
+ </div>
+</div>
+
+<script>
+let page=1, pages=1, currentEvents=[];
+async function loadStats(){
+ const r=await fetch('/api/stats'); const s=await r.json();
+ document.getElementById('stats').innerHTML = `
+ <div class="stat"><span>TOTAL EVENTS</span><b>${s.total.toLocaleString()}</b></div>
+ <div class="stat danger"><span>FAILED LOGONS</span><b>${s.failed_logons}</b></div>
+ <div class="stat success"><span>SUCCESSFUL LOGONS</span><b>${s.successful_logons}</b></div>
+ <div class="stat warning"><span>WARNINGS</span><b>${s.warnings}</b></div>
+ <div class="stat"><span>UNIQUE SOURCE IPs</span><b>${s.unique_ips}</b></div>`;
+}
+function val(id){return encodeURIComponent(document.getElementById(id).value.trim())}
+async function loadEvents(p=1){
+ page=p;
+ const url=`/api/events?page=${page}&q=${val('q')}&event_id=${val('event_id')}&source_ip=${val('source_ip')}&account=${val('account')}&level=${val('level')}`;
+ const r=await fetch(url); const d=await r.json(); currentEvents=d.events; pages=d.pages;
+ document.getElementById('resultCount').textContent=`Showing ${d.events.length} of ${d.total.toLocaleString()} matching events`;
+ document.getElementById('pageInfo').textContent=`Page ${d.page} / ${d.pages}`;
+ document.getElementById('prev').disabled=page<=1; document.getElementById('next').disabled=page>=pages;
+ document.getElementById('eventRows').innerHTML=d.events.map((e,i)=>`
+ <tr onclick="showEvent(${i})">
+ <td>${e.timestamp}</td><td><strong>${e.event_id}</strong></td>
+ <td><span class="badge ${e.level.replace(' ','-').toLowerCase()}">${e.level}</span></td>
+ <td>${e.account}</td><td class="mono">${e.source_ip}</td><td>${e.hostname}</td>
+ <td class="message">${e.message}</td></tr>`).join('');
+}
+function showEvent(i){
+ const e=currentEvents[i];
+ document.getElementById('details').innerHTML=`
+ <div class="detail-row"><span>Record ID</span><b>${e.record_id}</b></div>
+ <div class="detail-row"><span>Timestamp</span><b>${e.timestamp}</b></div>
+ <div class="detail-row"><span>Event ID</span><b class="event-code">${e.event_id}</b></div>
+ <div class="detail-row"><span>Level</span><b>${e.level}</b></div>
+ <div class="detail-row"><span>Account</span><b>${e.account}</b></div>
+ <div class="detail-row"><span>Source IP</span><b class="mono">${e.source_ip}</b></div>
+ <div class="detail-row"><span>Hostname</span><b>${e.hostname}</b></div>
+ <div class="detail-row"><span>Logon Type</span><b>${e.logon_type ?? '—'}</b></div>
+ <div class="detail-message"><span>Event Message</span><p>${e.message}</p></div>`;
+}
+function changePage(n){if(page+n>=1 && page+n<=pages) loadEvents(page+n)}
+function clearFilters(){['q','event_id','source_ip','account'].forEach(x=>document.getElementById(x).value='');document.getElementById('level').value='';loadEvents(1)}
+async function confirmIOC(){
+ const ip=document.getElementById('iocInput').value.trim();
+ const r=await fetch('/api/confirm-ioc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip})});
+ const d=await r.json(); const m=document.getElementById('actionMsg');
+ if(d.success){document.getElementById('flagText').textContent=d.flag;document.getElementById('flagModal').classList.remove('hidden');m.textContent='IOC confirmed.';m.className='ok'}
+ else {m.textContent=d.message;m.className='error'}
+}
+loadStats();loadEvents(1);
+document.addEventListener('keydown',e=>{if(e.key==='Enter' && ['q','event_id','source_ip','account'].includes(document.activeElement.id))loadEvents(1)})
+</script>
+</body>
+</html>
